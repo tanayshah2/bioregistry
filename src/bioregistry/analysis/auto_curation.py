@@ -9,6 +9,7 @@ from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 from tabulate import tabulate
 import indra.literature.pubmed_client as pubmed_client
+import json
 
 from bioregistry.bibliometrics import get_publications_df
 from bioregistry.constants import EXPORT_ANALYSES
@@ -21,15 +22,35 @@ URL = (
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vRPtP-tcXSx8zvhCuX6fqz_QvHowyAoDahnkixARk9rFTe0gfBN9GfdG6qTNQHHVL0i33XGSp_nV9XM/pub?output=csv")
 
 
+def load_bioregistry_json(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    publications = []
+    for entry in data.values():
+        if "publications" in entry:
+            for pub in entry["publications"]:
+                publications.append({
+                    "pubmed": pub.get("pubmed"),
+                    "title": pub.get("title"),
+                    "label": 1
+                })
+    print(f"Got {len(publications)} publications from the bioregistry")
+    return pd.DataFrame(publications)
+
+
 def fetch_pubmed_papers():
     search_terms = ["database", "ontology", "resource", "vocabulary", "nomenclature"]
-    all_pmids = []
+    paper_to_terms = {}
 
     for term in search_terms:
-        pmids = pubmed_client.get_ids(term, use_text_word=False, reldate=30)
-        all_pmids.extend(pmids)
+        pmids = pubmed_client.get_ids(term, use_text_word=True, reldate=30)
+        for pmid in pmids:
+            if pmid in paper_to_terms:
+                paper_to_terms[pmid].append(term)
+            else:
+                paper_to_terms[pmid] = [term]
 
-    all_pmids = list(set(all_pmids))
+    all_pmids = list(paper_to_terms.keys())
     if not all_pmids:
         click.echo(f"No PMIDs found for the last 30 days with the search terms: {search_terms}")
         return pd.DataFrame()
@@ -40,21 +61,12 @@ def fetch_pubmed_papers():
 
     records = [
         {"pubmed": paper.get("pmid"), "title": paper.get("title"),
-         "year": paper.get("publication_date", {}).get("year")}
+         "year": paper.get("publication_date", {}).get("year"),
+         "search_terms": paper_to_terms.get(paper.get("pmid"))}
         for paper in papers.values() if
         paper.get("title") and paper.get("pmid") and paper.get("publication_date", {}).get("year")
     ]
     return pd.DataFrame(records)
-
-
-def load_bioregistry_publications():
-    click.echo("Loading bioregistry publications")
-    df = get_publications_df()
-    df = df[df.pubmed.notna() & df.title.notna()]
-    df = df[["pubmed", "title", "year"]]
-    df["label"] = True
-    click.echo(f"Got {df.shape[0]} publications from the bioregistry")
-    return df
 
 
 def load_curation_data():
@@ -122,12 +134,17 @@ def predict_and_save(df, vectorizer, classifiers, meta_clf, filename):
 
 @click.command()
 def main() -> None:
-    publication_df = load_bioregistry_publications()
+    # Load bioregistry publications
+    publication_df = load_bioregistry_json('/mnt/data/bioregistry.json')
+
+    # Load Google Sheets curation data
     curation_df = load_curation_data()
 
+    # Combine both data sources
     df = pd.concat([curation_df, publication_df])
     df["title"] = df["title"].str.slice(0, 20)
 
+    # Proceed with vectorization and training
     vectorizer = TfidfVectorizer(stop_words="english")
     vectorizer.fit(df.title)
 
