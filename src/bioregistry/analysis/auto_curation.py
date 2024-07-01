@@ -1,6 +1,6 @@
 import click
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
@@ -11,18 +11,26 @@ from tabulate import tabulate
 import indra.literature.pubmed_client as pubmed_client
 import json
 
-from bioregistry.bibliometrics import get_publications_df
-from bioregistry.constants import EXPORT_ANALYSES
+from pathlib import Path
 
-BASE_DIRECTORY = EXPORT_ANALYSES
+# Update the directory path to exports/analyses/auto_curation
+BASE_DIRECTORY = Path("exports/analyses")
 AUTO_CURATION_DIRECTORY = BASE_DIRECTORY.joinpath("auto_curation")
 AUTO_CURATION_DIRECTORY.mkdir(exist_ok=True, parents=True)
 
 URL = (
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRPtP-tcXSx8zvhCuX6fqz_QvHowyAoDahnkixARk9rFTe0gfBN9GfdG6qTNQHHVL0i33XGSp_nV9XM/pub?output=csv")
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRPtP-tcXSx8zvhCuX6fqz_QvHowyAoDahnkixARk9rFTe0gfBN9GfdG6qTNQHHVL0i33XGSp_nV9XM/pub?output=csv"
+)
 
 
 def load_bioregistry_json(file_path):
+    """Load bioregistry data from a JSON file, extracting publication details.
+
+    :param file_path: Path to the bioregistry JSON file.
+    :type file_path: str
+    :return: DataFrame containing publication details.
+    :rtype: pd.DataFrame
+    """
     with open(file_path, 'r') as f:
         data = json.load(f)
     publications = []
@@ -34,11 +42,16 @@ def load_bioregistry_json(file_path):
                     "title": pub.get("title"),
                     "label": 1
                 })
-    print(f"Got {len(publications)} publications from the bioregistry")
+    click.echo(f"Got {len(publications)} publications from the bioregistry")
     return pd.DataFrame(publications)
 
 
 def fetch_pubmed_papers():
+    """Fetch PubMed papers from the last 30 days using specific search terms.
+
+    :return: DataFrame containing PubMed paper details.
+    :rtype: pd.DataFrame
+    """
     search_terms = ["database", "ontology", "resource", "vocabulary", "nomenclature"]
     paper_to_terms = {}
 
@@ -70,6 +83,11 @@ def fetch_pubmed_papers():
 
 
 def load_curation_data():
+    """Download and load curation data from a Google Sheets URL.
+
+    :return: DataFrame containing curated publication details.
+    :rtype: pd.DataFrame
+    """
     click.echo("Downloading curation")
     df = pd.read_csv(URL)
     df["label"] = df["relevant"].map(_map_labels)
@@ -79,6 +97,13 @@ def load_curation_data():
 
 
 def _map_labels(s: str):
+    """Map labels to binary values.
+
+    :param s: Label value.
+    :type s: str
+    :return: Mapped binary label value.
+    :rtype: int
+    """
     if s in {"1", "1.0", 1, 1.0}:
         return 1
     if s in {"0", "0.0", 0, 0.0}:
@@ -87,6 +112,15 @@ def _map_labels(s: str):
 
 
 def train_classifiers(x_train, y_train):
+    """Train multiple classifiers on the training data.
+
+    :param x_train: Training features.
+    :type x_train: array-like
+    :param y_train: Training labels.
+    :type y_train: array-like
+    :return: List of trained classifiers.
+    :rtype: list
+    """
     classifiers = [
         ("rf", RandomForestClassifier()),
         ("lr", LogisticRegression()),
@@ -100,6 +134,17 @@ def train_classifiers(x_train, y_train):
 
 
 def generate_meta_features(classifiers, x_train, y_train):
+    """Generate meta-features for training a meta-classifier using cross-validation predictions.
+
+    :param classifiers: List of trained classifiers.
+    :type classifiers: list
+    :param x_train: Training features.
+    :type x_train: array-like
+    :param y_train: Training labels.
+    :type y_train: array-like
+    :return: DataFrame containing meta-features.
+    :rtype: pd.DataFrame
+    """
     meta_features = pd.DataFrame()
     for name, clf in classifiers:
         if hasattr(clf, "predict_proba"):
@@ -111,6 +156,17 @@ def generate_meta_features(classifiers, x_train, y_train):
 
 
 def evaluate_meta_classifier(meta_clf, x_test_meta, y_test):
+    """Evaluate the meta-classifier using MCC and AUC-ROC scores.
+
+    :param meta_clf: Trained meta-classifier.
+    :type meta_clf: classifier
+    :param x_test_meta: Test meta-features.
+    :type x_test_meta: array-like
+    :param y_test: Test labels.
+    :type y_test: array-like
+    :return: MCC and AUC-ROC scores.
+    :rtype: tuple
+    """
     y_pred = meta_clf.predict(x_test_meta)
     mcc = matthews_corrcoef(y_test, y_pred)
     roc_auc = roc_auc_score(y_test, meta_clf.predict_proba(x_test_meta)[:, 1])
@@ -118,6 +174,19 @@ def evaluate_meta_classifier(meta_clf, x_test_meta, y_test):
 
 
 def predict_and_save(df, vectorizer, classifiers, meta_clf, filename):
+    """Predict and save scores for new data using trained classifiers and meta-classifier.
+
+    :param df: DataFrame containing new data.
+    :type df: pd.DataFrame
+    :param vectorizer: Trained TF-IDF vectorizer.
+    :type vectorizer: TfidfVectorizer
+    :param classifiers: List of trained classifiers.
+    :type classifiers: list
+    :param meta_clf: Trained meta-classifier.
+    :type meta_clf: classifier
+    :param filename: Filename to save the predictions.
+    :type filename: str
+    """
     x_meta = pd.DataFrame()
     x_transformed = vectorizer.transform(df.title)
     for name, clf in classifiers:
@@ -133,18 +202,22 @@ def predict_and_save(df, vectorizer, classifiers, meta_clf, filename):
 
 
 @click.command()
-def main() -> None:
-    # Load bioregistry publications
-    publication_df = load_bioregistry_json('/mnt/data/bioregistry.json')
+@click.option('--bioregistry-file', default='src/bioregistry/data/bioregistry.json',
+              help='Path to the bioregistry.json file')
+def main(bioregistry_file):
+    """Main function to load data, train classifiers, evaluate models, and predict new data.
 
-    # Load Google Sheets curation data
+    :param bioregistry_file: Path to the bioregistry JSON file.
+    :type bioregistry_file: str
+    """
+
+    publication_df = load_bioregistry_json(bioregistry_file)
     curation_df = load_curation_data()
 
     # Combine both data sources
     df = pd.concat([curation_df, publication_df])
     df["title"] = df["title"].str.slice(0, 20)
 
-    # Proceed with vectorization and training
     vectorizer = TfidfVectorizer(stop_words="english")
     vectorizer.fit(df.title)
 
@@ -156,7 +229,7 @@ def main() -> None:
 
     classifiers = train_classifiers(x_train, y_train)
 
-    click.echo("scoring individual classifiers")
+    click.echo("Scoring individual classifiers")
     scores = []
     for name, clf in classifiers:
         y_pred = clf.predict(x_test)
@@ -216,7 +289,7 @@ def main() -> None:
     click.echo(tabulate(importances_df.head(15), showindex=False, headers=importances_df.columns))
 
     importance_path = AUTO_CURATION_DIRECTORY.joinpath("importances.tsv")
-    click.echo(f"writing feature (word) importances to {importance_path}")
+    click.echo(f"Writing feature (word) importances to {importance_path}")
     importances_df.to_csv(importance_path, sep="\t", index=False)
 
     novel_df = df[~df.label.notna()][["pubmed", "title"]].copy()
