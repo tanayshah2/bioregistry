@@ -1,7 +1,6 @@
 """Train a TF-IDF classifier and use it to score the relevance of new PubMed papers to the Bioregistry."""
 
 import json
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -352,10 +351,8 @@ def main(bioregistry_file):
     importances_df.to_csv(importance_path, sep="\t", index=False)
 
     new_pub_df = fetch_pubmed_papers()
-        if not new_pub_df.empty:
-
-        filename = f"predictions.tsv"
-
+    if not new_pub_df.empty:
+        filename = "predictions.tsv"
         predict_and_save(new_pub_df, vectorizer, classifiers, meta_clf, filename)
 
 
